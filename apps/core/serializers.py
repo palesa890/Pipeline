@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.db.models import Sum
 from django.contrib.auth import get_user_model
@@ -6,6 +8,8 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
 from .models import Event, Reservation, ReservationLine, Tag, TicketType, Venue
+
+logger = logging.getLogger(__name__)
 
 
 class RegistrationSerializer(serializers.ModelSerializer):
@@ -111,6 +115,10 @@ class TicketTypeSerializer(serializers.ModelSerializer):
         event = attrs.get("event", getattr(self.instance, "event", None))
         capacity = attrs.get("capacity", getattr(self.instance, "capacity", None))
         price = attrs.get("price", getattr(self.instance, "price", None))
+        if self.instance and event != self.instance.event:
+            raise serializers.ValidationError(
+                {"event": "A ticket type's event cannot be changed."}
+            )
         if capacity is not None and capacity <= 0:
             raise serializers.ValidationError(
                 {"capacity": "Ticket type capacity must be greater than zero."}
@@ -250,6 +258,17 @@ class ReservationSerializer(serializers.ModelSerializer):
             or 0
         )
         if booked_total + requested_total > event.capacity:
+            logger.warning(
+                "reservation_rejected_capacity",
+                extra={
+                    "event_type": "reservation_rejected_capacity",
+                    "event_id": event.pk,
+                    "user_id": reservation.user_id,
+                    "requested_quantity": requested_total,
+                    "booked_quantity": booked_total,
+                    "capacity": event.capacity,
+                },
+            )
             raise serializers.ValidationError({"items": "Not enough event capacity is available."})
 
         for item in items:
@@ -259,6 +278,18 @@ class ReservationSerializer(serializers.ModelSerializer):
                 or 0
             )
             if booked + item["quantity"] > ticket.capacity:
+                logger.warning(
+                    "reservation_rejected_ticket_capacity",
+                    extra={
+                        "event_type": "reservation_rejected_ticket_capacity",
+                        "event_id": event.pk,
+                        "ticket_type_id": ticket.pk,
+                        "user_id": reservation.user_id,
+                        "requested_quantity": item["quantity"],
+                        "booked_quantity": booked,
+                        "capacity": ticket.capacity,
+                    },
+                )
                 raise serializers.ValidationError(
                     {"items": f"Not enough '{ticket.name}' tickets are available."}
                 )

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -34,7 +35,8 @@ def ticket_setup():
 
 
 @pytest.mark.django_db
-def test_reservation_crud_owner_scope_and_cancellation(ticket_setup):
+def test_reservation_crud_owner_scope_and_cancellation(ticket_setup, caplog):
+    caplog.set_level(logging.INFO)
     user, other_user, _, event, ticket = ticket_setup
     client = APIClient()
     client.force_authenticate(user=user)
@@ -84,10 +86,16 @@ def test_reservation_crud_owner_scope_and_cancellation(ticket_setup):
     assert client.delete(
         reverse("reservation-detail", kwargs={"pk": new_reservation.data["id"]})
     ).status_code == 204
+    logged_events = {
+        getattr(record, "event_type", None)
+        for record in caplog.records
+    }
+    assert {"reservation_created", "reservation_cancelled"} <= logged_events
 
 
 @pytest.mark.django_db
-def test_reservation_rejects_capacity_and_invalid_ticket_selections(ticket_setup):
+def test_reservation_rejects_capacity_and_invalid_ticket_selections(ticket_setup, caplog):
+    caplog.set_level(logging.WARNING)
     user, _, _, event, ticket = ticket_setup
     client = APIClient()
     client.force_authenticate(user=user)
@@ -138,6 +146,10 @@ def test_reservation_rejects_capacity_and_invalid_ticket_selections(ticket_setup
         format="json",
     )
     assert wrong_event.status_code == 400
+    assert any(
+        getattr(record, "event_type", None) == "reservation_rejected_ticket_capacity"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.django_db
@@ -177,12 +189,36 @@ def test_health_endpoint_reports_database_state_and_openapi():
     assert healthy.data["database"] == "connected"
     assert healthy.data["uptime_seconds"] >= 0
 
+    live = client.get(reverse("health-live"))
+    assert live.status_code == 200
+    assert live.data["status"] == "ok"
+    assert "database" not in live.data
+
+    ready = client.get(reverse("health-ready"))
+    assert ready.status_code == 200
+    assert ready.data["database"] == "connected"
+
     with patch("apps.core.views.connections") as mocked_connections:
         connection_lookup = mocked_connections.__getitem__.return_value
         connection_lookup.cursor.side_effect = DatabaseError("offline")
-        unhealthy = client.get(reverse("health"))
+        live_while_database_is_down = client.get(reverse("health-live"))
+        unhealthy = client.get(reverse("health-ready"))
+    assert live_while_database_is_down.status_code == 200
     assert unhealthy.status_code == 503
     assert unhealthy.data["status"] == "unavailable"
 
     assert client.get(reverse("schema")).status_code == 200
     assert client.get(reverse("swagger-ui")).status_code == 200
+
+
+@pytest.mark.django_db
+def test_health_endpoints_propagate_request_id():
+    client = APIClient()
+    supplied_id = "request-123"
+
+    response = client.get(reverse("health-live"), HTTP_X_REQUEST_ID=supplied_id)
+
+    assert response["X-Request-ID"] == supplied_id
+    generated = client.get(reverse("health-live"), HTTP_X_REQUEST_ID="bad\r\nid")
+    assert generated["X-Request-ID"] != "bad\r\nid"
+    assert len(generated["X-Request-ID"]) == 36

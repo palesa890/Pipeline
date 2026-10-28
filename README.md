@@ -25,6 +25,7 @@ docker compose up -d --build
 ```
 
 Compose starts PostgreSQL and the API. The application container waits for the database and applies migrations automatically before starting the server.
+The API container's health check uses the readiness endpoint. Application logs are emitted as JSON to container stdout/stderr; requests accept or receive an `X-Request-ID`, which is also included in the Gunicorn access log.
 
 Create a staff account for managing the catalog:
 
@@ -99,12 +100,14 @@ All API routes are under `/api/` (there is no `/api/v1/` prefix). JWT authentica
 | `POST` | `/api/reservations/` | Reserve ticket quantities |
 | `GET` | `/api/reservations/` | List the signed-in user's reservations |
 | `POST` | `/api/reservations/{id}/cancel/` | Cancel a reservation |
-| `GET` | `/health/` | Check API and database health |
+| `GET` | `/health/live/` | Liveness check (does not query the database) |
+| `GET` | `/health/ready/`, `/health/` | Readiness check (includes database connectivity) |
 | `GET` | `/api/schema/` | Download the OpenAPI schema |
 | `GET` | `/api/docs/` | Open Swagger UI |
 | — | `/admin/` | Django administration |
 
 This project reserves quantities of ticket types; it does not currently implement individual seats or seat UUIDs.
+The API echoes a valid `X-Request-ID` request header or generates one, and includes it in JSON application logs and the Gunicorn access log.
 
 ## Database indexes
 
@@ -125,6 +128,7 @@ The examples use the Bash shell. Replace placeholder IDs and token values with v
 
 ```bash
 export ACCESS_TOKEN="your_access_token"
+AUTH_SCHEME="Bearer"
 ```
 
 ### 1. Register a customer and obtain a JWT
@@ -160,7 +164,7 @@ Create a venue and note its returned `id`:
 
 ```bash
 curl -X POST http://localhost:8000/api/venues/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Grand Hall",
@@ -173,7 +177,7 @@ Create an event using the venue ID, and note the event ID:
 
 ```bash
 curl -X POST http://localhost:8000/api/events/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "venue": VENUE_ID,
@@ -188,7 +192,7 @@ Create a ticket type for that event and note its ID:
 
 ```bash
 curl -X POST http://localhost:8000/api/ticket-types/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "event": EVENT_ID,
@@ -204,10 +208,10 @@ Catalog requests require authentication:
 
 ```bash
 curl http://localhost:8000/api/events/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}"
 
 curl http://localhost:8000/api/ticket-types/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}"
 ```
 
 ### 4. Reserve tickets
@@ -216,7 +220,7 @@ Create a reservation by supplying an event ID and one or more ticket type/quanti
 
 ```bash
 curl -X POST http://localhost:8000/api/reservations/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
     "event": EVENT_ID,
@@ -235,12 +239,25 @@ Customers see their own reservations:
 
 ```bash
 curl http://localhost:8000/api/reservations/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}"
 ```
 
 Cancel a reservation by its returned ID:
 
 ```bash
 curl -X POST http://localhost:8000/api/reservations/RESERVATION_ID/cancel/ \
-  -H "Authorization: Bearer $ACCESS_TOKEN"
+  -H "Authorization: ${AUTH_SCHEME} ${ACCESS_TOKEN}"
 ```
+
+## Project checklist
+
+- [x] Django app with 3+ related models
+- [x] CRUD endpoints with authentication and permissions
+- [x] Custom error handling with a consistent JSON schema
+- [x] Multi-stage Dockerfile
+- [x] Docker Compose with PostgreSQL
+- [x] Unit tests with at least 80% coverage (90.93% locally)
+- [x] GitHub Actions CI pipeline (lint, test, build)
+- [x] `/health/` endpoint
+- [x] Swagger/OpenAPI documentation
+- [x] README with setup, cURL samples, and index reasoning

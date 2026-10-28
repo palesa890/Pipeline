@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.core.models import Event, Tag, TicketType, Venue
+from apps.core.models import Event, Reservation, ReservationLine, Tag, TicketType, Venue
 
 
 @pytest.fixture
@@ -133,3 +133,70 @@ def test_model_validates_capacity_and_string_representations(catalog):
     with pytest.raises(ValidationError):
         venue.full_clean()
     assert admin.created_events.count() == 1
+
+
+@pytest.mark.django_db
+def test_deleting_protected_catalog_records_returns_conflict(catalog):
+    admin, user, venue, _, event, ticket_type = catalog
+    reservation = Reservation.objects.create(user=user, event=event)
+    ReservationLine.objects.create(
+        reservation=reservation,
+        ticket_type=ticket_type,
+        quantity=1,
+    )
+    client = APIClient()
+    client.force_authenticate(user=admin)
+
+    protected_urls = [
+        reverse("venue-detail", kwargs={"pk": venue.pk}),
+        reverse("event-detail", kwargs={"pk": event.pk}),
+        reverse("tickettype-detail", kwargs={"pk": ticket_type.pk}),
+    ]
+    for url in protected_urls:
+        response = client.delete(url)
+        assert response.status_code == 409
+        assert response.data == {
+            "error": {
+                "code": "resource_in_use",
+                "message": (
+                    "The resource cannot be deleted because it is referenced by "
+                    "other records."
+                ),
+                "details": {"detail": "The resource is referenced by existing records."},
+            }
+        }
+
+    assert Venue.objects.filter(pk=venue.pk).exists()
+    assert Event.objects.filter(pk=event.pk).exists()
+    assert TicketType.objects.filter(pk=ticket_type.pk).exists()
+
+
+@pytest.mark.django_db
+def test_ticket_type_with_confirmed_reservations_cannot_change_event(catalog):
+    admin, user, venue, _, event, ticket_type = catalog
+    other_event = Event.objects.create(
+        venue=venue,
+        created_by=admin,
+        title="Other Concert",
+        starts_at=datetime.now(timezone.utc) + timedelta(days=4),
+        capacity=100,
+    )
+    reservation = Reservation.objects.create(user=user, event=event)
+    ReservationLine.objects.create(
+        reservation=reservation,
+        ticket_type=ticket_type,
+        quantity=1,
+    )
+    client = APIClient()
+    client.force_authenticate(user=admin)
+
+    response = client.patch(
+        reverse("tickettype-detail", kwargs={"pk": ticket_type.pk}),
+        {"event": other_event.pk},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert "event" in response.data["error"]["details"]
+    ticket_type.refresh_from_db()
+    assert ticket_type.event_id == event.pk

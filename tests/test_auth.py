@@ -54,7 +54,11 @@ def test_registration_validation_uses_standard_error_schema():
 
 
 @pytest.mark.django_db
-def test_protected_catalog_requires_authentication():
+def test_protected_catalog_requires_authentication(caplog):
     response = APIClient().get(reverse("event-list"))
     assert response.status_code == 401
     assert "error" in response.data
+    assert any(
+        getattr(record, "event_type", None) == "api_access_denied"
+        for record in caplog.records
+    )

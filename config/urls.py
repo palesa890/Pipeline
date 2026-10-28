@@ -8,6 +8,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from apps.core.views import (
     EventViewSet,
     HealthView,
+    LiveHealthView,
     RegistrationView,
     ReservationViewSet,
     TagViewSet,
@@ -25,6 +26,8 @@ router.register("reservations", ReservationViewSet, basename="reservation")
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("health/", HealthView.as_view(), name="health"),
+    path("health/live/", LiveHealthView.as_view(), name="health-live"),
+    path("health/ready/", HealthView.as_view(), name="health-ready"),
     path("api/register/", RegistrationView.as_view(), name="register"),
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),

@@ -26,12 +26,25 @@ services:
       POSTGRES_PORT: "5432"
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready/', timeout=2)",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       db:
         condition: service_healthy
     command: >
       sh -c "python manage.py migrate --noinput &&
-             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --access-logfile -"
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3
+             --access-logfile - --access-logformat '%(h)s %(r)s %(s)s %(L)s \"%({x-request-id}o)s\"'"
 
 volumes:
   postgres_data:

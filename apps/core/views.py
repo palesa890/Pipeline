@@ -1,4 +1,5 @@
 import time
+import logging
 
 from django.db import transaction
 from django.db import DatabaseError, connections
@@ -22,6 +23,20 @@ from .serializers import (
 )
 
 STARTED_AT = time.monotonic()
+logger = logging.getLogger(__name__)
+
+
+class LiveHealthView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return Response(
+            {
+                "status": "ok",
+                "uptime_seconds": round(time.monotonic() - STARTED_AT, 2),
+            }
+        )
 
 
 class HealthView(APIView):
@@ -104,7 +119,17 @@ class ReservationViewSet(viewsets.ModelViewSet):
         return queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        reservation = serializer.save(user=self.request.user)
+        logger.info(
+            "reservation_created",
+            extra={
+                "event_type": "reservation_created",
+                "reservation_id": reservation.pk,
+                "event_id": reservation.event_id,
+                "user_id": reservation.user_id,
+                "quantity": sum(line.quantity for line in reservation.lines.all()),
+            },
+        )
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
@@ -118,4 +143,13 @@ class ReservationViewSet(viewsets.ModelViewSet):
                 raise ValidationError({"status": "Reservation is already cancelled."})
             reservation.status = Reservation.Status.CANCELLED
             reservation.save(update_fields=["status", "updated_at"])
+        logger.info(
+            "reservation_cancelled",
+            extra={
+                "event_type": "reservation_cancelled",
+                "reservation_id": reservation.pk,
+                "event_id": reservation.event_id,
+                "user_id": reservation.user_id,
+            },
+        )
         return Response(self.get_serializer(reservation).data)
