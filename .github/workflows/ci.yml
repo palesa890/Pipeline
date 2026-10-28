@@ -2,45 +2,60 @@ name: CI
 
 on:
   push:
+    branches: [ main, master ]
   pull_request:
+    branches: [ main, master ]
 
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
+    
     services:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: ticketing
-          POSTGRES_USER: ticketing
-          POSTGRES_PASSWORD: ticketing
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB || 'ticketing' }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER || 'ticketing' }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'ticketing' }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ticketing -d ticketing"
+          --health-cmd "pg_isready -U ${{ secrets.POSTGRES_USER || 'ticketing' }} -d ${{ secrets.POSTGRES_DB || 'ticketing' }}"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-    env:
-      DJANGO_DEBUG: "false"
-      DJANGO_SECRET_KEY: ci-only-secret-key
-      POSTGRES_DB: ticketing
-      POSTGRES_USER: ticketing
-      POSTGRES_PASSWORD: ticketing
-      POSTGRES_HOST: 127.0.0.1
-      POSTGRES_PORT: 5432
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements-dev.txt
+
+      - name: Create .env file for CI
+        run: |
+          cat <<EOF > .env
+          DJANGO_DEBUG=false
+          DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY || 'ci-only-secret-key' }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB || 'ticketing' }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER || 'ticketing' }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD || 'ticketing' }}
+          POSTGRES_HOST=127.0.0.1
+          POSTGRES_PORT=5432
+          EOF
+
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+
       - name: Lint
         run: flake8 .
+
       - name: Run tests
         run: pytest --cov=apps.core --cov-report=term-missing --cov-fail-under=90
+
       - name: Build Docker image
         run: docker build --tag halcyon-ticketing:${{ github.sha }} .
