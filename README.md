@@ -78,7 +78,7 @@ python manage.py runserver
 When `POSTGRES_HOST` is not set, local development uses SQLite. Run the tests and coverage check with:
 
 ```bash
-pytest --cov=apps.core --cov-report=term-missing --cov-fail-under=80
+pytest --cov=apps.core --cov-report=term-missing --cov-fail-under=90
 ```
 
 Run the linter with:
@@ -256,7 +256,7 @@ curl -X POST http://localhost:8000/api/reservations/RESERVATION_ID/cancel/ \
 - [x] Custom error handling with a consistent JSON schema
 - [x] Multi-stage Dockerfile
 - [x] Docker Compose with PostgreSQL
-- [x] Unit tests with at least 80% coverage (90.93% locally)
+- [x] Unit tests with at least 90% coverage (CI test suite runs against PostgreSQL)
 - [x] GitHub Actions CI pipeline (lint, test, build)
 - [x] `/health/` endpoint
 - [x] Swagger/OpenAPI documentation

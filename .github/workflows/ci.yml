@@ -41,6 +41,6 @@ jobs:
       - name: Lint
         run: flake8 .
       - name: Run tests
-        run: pytest --cov=apps.core --cov-report=term-missing --cov-fail-under=80
+        run: pytest --cov=apps.core --cov-report=term-missing --cov-fail-under=90
       - name: Build Docker image
         run: docker build --tag halcyon-ticketing:${{ github.sha }} .

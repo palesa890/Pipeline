@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 import logging
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import DatabaseError
+from django.db import DatabaseError, close_old_connections, connection, connections
+from django.db.models import Sum
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -35,9 +38,8 @@ def ticket_setup():
 
 
 @pytest.mark.django_db
-def test_reservation_crud_owner_scope_and_cancellation(ticket_setup, caplog):
-    caplog.set_level(logging.INFO)
-    user, other_user, _, event, ticket = ticket_setup
+def test_reservation_create_update_and_delete(ticket_setup):
+    user, _, _, event, ticket = ticket_setup
     client = APIClient()
     client.force_authenticate(user=user)
     create = client.post(
@@ -64,33 +66,104 @@ def test_reservation_crud_owner_scope_and_cancellation(ticket_setup, caplog):
     with pytest.raises(ValidationError):
         ticket.full_clean()
 
+    assert client.delete(detail_url).status_code == 204
+
+
+@pytest.mark.django_db
+def test_reservation_is_only_visible_to_its_owner(ticket_setup):
+    user, other_user, _, event, ticket = ticket_setup
+    owner_client = APIClient()
+    owner_client.force_authenticate(user=user)
+    created = owner_client.post(
+        reverse("reservation-list"),
+        {"event": event.pk, "items": [{"ticket_type": ticket.pk, "quantity": 1}]},
+        format="json",
+    )
+    detail_url = reverse("reservation-detail", kwargs={"pk": created.data["id"]})
+
+    client = APIClient()
     client.force_authenticate(user=other_user)
     assert client.get(detail_url).status_code == 404
     assert client.delete(detail_url).status_code == 404
 
+
+@pytest.mark.django_db
+def test_reservation_cancellation_is_logged_and_cannot_repeat(ticket_setup, caplog):
+    caplog.set_level(logging.INFO)
+    user, _, _, event, ticket = ticket_setup
+    client = APIClient()
     client.force_authenticate(user=user)
+    created = client.post(
+        reverse("reservation-list"),
+        {"event": event.pk, "items": [{"ticket_type": ticket.pk, "quantity": 2}]},
+        format="json",
+    )
+    reservation_id = created.data["id"]
     cancel_url = reverse("reservation-cancel", kwargs={"pk": reservation_id})
+
     cancelled = client.post(cancel_url)
     assert cancelled.status_code == 200
     assert cancelled.data["status"] == Reservation.Status.CANCELLED
     repeated = client.post(cancel_url)
     assert repeated.status_code == 400
     assert "error" in repeated.data
-
-    new_reservation = client.post(
-        reverse("reservation-list"),
-        {"event": event.pk, "items": [{"ticket_type": ticket.pk, "quantity": 5}]},
-        format="json",
-    )
-    assert new_reservation.status_code == 201
-    assert client.delete(
-        reverse("reservation-detail", kwargs={"pk": new_reservation.data["id"]})
-    ).status_code == 204
-    logged_events = {
+    assert {
         getattr(record, "event_type", None)
         for record in caplog.records
-    }
-    assert {"reservation_created", "reservation_cancelled"} <= logged_events
+    } >= {"reservation_created", "reservation_cancelled"}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_reservations_cannot_exceed_event_capacity(ticket_setup):
+    if connection.vendor == "sqlite":
+        pytest.skip("select_for_update does not serialize bookings on SQLite")
+
+    user, other_user, _, event, ticket = ticket_setup
+    event.capacity = 1
+    event.save(update_fields=["capacity"])
+    ticket.capacity = 1
+    ticket.save(update_fields=["capacity"])
+    other_ticket = TicketType.objects.create(
+        event=event,
+        name="Premium",
+        price="75.00",
+        capacity=1,
+    )
+    barrier = Barrier(2)
+
+    def reserve(args):
+        user_id, ticket_id = args
+        close_old_connections()
+        try:
+            request_user = get_user_model().objects.get(pk=user_id)
+            client = APIClient()
+            client.force_authenticate(user=request_user)
+            barrier.wait(timeout=10)
+            response = client.post(
+                reverse("reservation-list"),
+                {"event": event.pk, "items": [{"ticket_type": ticket_id, "quantity": 1}]},
+                format="json",
+            )
+            return response.status_code
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                reserve,
+                [(user.pk, ticket.pk), (other_user.pk, other_ticket.pk)],
+            )
+        )
+
+    assert sorted(results) == [201, 400]
+    assert (
+        ReservationLine.objects.filter(
+            reservation__event=event,
+            reservation__status=Reservation.Status.CONFIRMED,
+        ).aggregate(total=Sum("quantity"))["total"]
+        == 1
+    )
 
 
 @pytest.mark.django_db
